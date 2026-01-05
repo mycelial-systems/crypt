@@ -126,7 +126,7 @@ npx crypt encode --help
 Generate a new cryptographic keypair, by default `ed25519`.
 
 **Ed25519 keys** (signing): Output is a JSON string of `{ publicKey, privateKey }`
-to stdout. By default (`-f raw`), the public key is in multikey format and
+to stdout, by default (`-f raw`). The public key is in multikey format and
 the private key is a base64url-encoded seed. Use `-f jwk` for JWK format.
 If `-o` is specified, the private key is written to the file and only the
 public key is printed to stdout.
