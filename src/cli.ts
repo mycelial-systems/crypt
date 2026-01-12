@@ -18,7 +18,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                     .positional('type', {
                         describe: 'The key type to use for the new key',
                         type: 'string',
-                        choices: ['ed25519', 'x25519', 'rsa'],
+                        choices: ['ed25519', 'x25519', 'rsa', 'k256'],
                         default: 'ed25519'
                     })
                     .option('format', {
@@ -45,7 +45,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             },
             async (argv) => {
                 await keysCommand({
-                    keyType: argv.type as 'ed25519'|'x25519'|'rsa',
+                    keyType: argv.type as 'ed25519'|'x25519'|'rsa'|'k256',
                     format: argv.format as 'raw'|'jwk',
                     output: argv.output as string|undefined,
                     use: argv.use as 'sign'|'exchange'
@@ -74,7 +74,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                     })
                     .option('type', {
                         alias: 't',
-                        describe: 'Key type (required when output-format is multi)',
+                        describe: 'Key type (required when ' +
+                            'output-format is multi)',
                         type: 'string',
                         choices: ['ed25519', 'rsa']
                     })
@@ -166,7 +167,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
  * CLI command handler for keys command.
  */
 async function keysCommand (args:{
-    keyType:'ed25519'|'x25519'|'rsa',
+    keyType:'ed25519'|'x25519'|'rsa'|'k256',
     format?:'raw'|'jwk',
     output?:string,
     use?:'sign'|'exchange'
@@ -175,7 +176,9 @@ async function keysCommand (args:{
 
     // For RSA, require output file unless format is 'jwk'
     if (args.keyType === 'rsa' && publicFormat !== 'jwk' && !args.output) {
-        console.error(chalk.red('Error: RSA keys require an output file. Use -o or --output to specify the private key file, or use -f jwk for JWK output.'))
+        console.error(chalk.red('Error: RSA keys require an output file. ' +
+            'Use -o or --output to specify the private key file, ' +
+            'or use -f jwk for JWK output.'))
         process.exit(1)
     }
 
@@ -186,14 +189,25 @@ async function keysCommand (args:{
             // Write private key to file
             if ('privateKeyPem' in result) {
                 // RSA PEM format
-                writeFileSync(args.output, result.privateKeyPem as string, 'utf8')
+                writeFileSync(
+                    args.output,
+                    result.privateKeyPem as string,
+                    'utf8'
+                )
             } else if (publicFormat === 'jwk') {
                 // JWK format - result is the JWK itself
-                writeFileSync(args.output, JSON.stringify(result, null, 2), 'utf8')
+                writeFileSync(
+                    args.output,
+                    JSON.stringify(result, null, 2),
+                    'utf8'
+                )
                 // For JWK, also output the public key portion to stdout
                 console.log(JSON.stringify({ publicKey: result }))
                 return
-            } else if ('privateKey' in result && typeof result.privateKey === 'string') {
+            } else if (
+                'privateKey' in result &&
+                typeof result.privateKey === 'string'
+            ) {
                 // Raw format (seed)
                 writeFileSync(args.output, result.privateKey, 'utf8')
             }

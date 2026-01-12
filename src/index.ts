@@ -70,7 +70,7 @@ export async function encode (
  *          Use 'sign' for RSA-PSS (signing), 'exchange' for RSA-OAEP (encryption).
  */
 export async function keys (args:{
-    keyType?:'ed25519'|'x25519'|'rsa',
+    keyType?:'ed25519'|'x25519'|'rsa'|'k256',
     format?:'raw'|'jwk',
     use?:'sign'|'exchange'
 } = {}):Promise<{
@@ -215,6 +215,47 @@ export async function keys (args:{
                 privateKeyPem: pem
             }
         }
+    } else if (keyType === 'k256') {
+        // secp256k1 - use Node.js crypto (not available in WebCrypto)
+        const { generateKeyPairSync } = await import('node:crypto')
+
+        const { privateKey, publicKey } = generateKeyPairSync('ec', {
+            namedCurve: 'secp256k1'
+        })
+
+        if (publicFormat === 'jwk') {
+            // Return private key JWK directly
+            const privateKeyJwk = privateKey.export({ format: 'jwk' })
+            return privateKeyJwk as any
+        } else {
+            // For 'raw' format, export keys as base64url
+            // Export private key as JWK to get the 'd' value
+            const privateKeyJwk = privateKey.export({ format: 'jwk' }) as {
+                d?: string;
+                x?: string;
+                y?: string;
+            }
+
+            if (!privateKeyJwk.d) {
+                throw new Error('Private key JWK missing "d" field')
+            }
+
+            // Export public key in compressed format (33 bytes)
+            // SEC1 compressed format: 0x02/0x03 prefix + x coordinate
+            const publicKeyRaw = publicKey.export({
+                format: 'der',
+                type: 'spki'
+            })
+
+            // Extract raw public key from SPKI DER format and compress it
+            const publicKeyCompressed = extractCompressedSecp256k1Key(publicKeyRaw)
+            const publicKeyEncoded = u.toString(publicKeyCompressed, 'base64url')
+
+            return {
+                publicKey: publicKeyEncoded,
+                privateKey: privateKeyJwk.d
+            }
+        }
     }
 
     throw new Error(`Unsupported keyType: ${keyType}`)
@@ -342,6 +383,86 @@ function extractRawRsaKey (spkiBytes:Uint8Array):Uint8Array {
 
     // The remaining bytes are the actual RSA public key in PKCS#1 format
     return spkiBytes.slice(offset)
+}
+
+/**
+ * Extract and compress a secp256k1 public key from SPKI DER format.
+ * Returns 33-byte compressed format (0x02/0x03 prefix + x coordinate).
+ */
+function extractCompressedSecp256k1Key (spkiDer:Buffer):Uint8Array {
+    // SPKI for EC keys contains:
+    // SEQUENCE {
+    //   SEQUENCE { algorithm OID, curve OID }
+    //   BIT STRING { uncompressed point: 04 || x || y }
+    // }
+    // For secp256k1, the uncompressed point is 65 bytes (1 + 32 + 32)
+
+    // Find the BIT STRING containing the public key
+    // It starts with 0x03 (BIT STRING tag) followed by length
+    let offset = 0
+
+    // Skip outer SEQUENCE
+    if (spkiDer[offset] !== 0x30) {
+        throw new Error('Invalid SPKI format: expected SEQUENCE')
+    }
+    offset++
+
+    // Skip length
+    if (spkiDer[offset] & 0x80) {
+        offset += 1 + (spkiDer[offset] & 0x7f)
+    } else {
+        offset++
+    }
+
+    // Skip algorithm SEQUENCE
+    if (spkiDer[offset] !== 0x30) {
+        throw new Error('Invalid SPKI format: expected algorithm SEQUENCE')
+    }
+    offset++
+
+    const algLength = spkiDer[offset]
+    if (algLength & 0x80) {
+        const lengthOfLength = algLength & 0x7f
+        let len = 0
+        for (let i = 0; i < lengthOfLength; i++) {
+            len = (len << 8) | spkiDer[offset + 1 + i]
+        }
+        offset += 1 + lengthOfLength + len
+    } else {
+        offset += 1 + algLength
+    }
+
+    // Now at BIT STRING
+    if (spkiDer[offset] !== 0x03) {
+        throw new Error('Invalid SPKI format: expected BIT STRING')
+    }
+    offset++
+
+    // Skip BIT STRING length
+    if (spkiDer[offset] & 0x80) {
+        offset += 1 + (spkiDer[offset] & 0x7f)
+    } else {
+        offset++
+    }
+
+    // Skip unused bits count (should be 0)
+    offset++
+
+    // Now we should have the uncompressed point: 04 || x (32 bytes) || y (32 bytes)
+    if (spkiDer[offset] !== 0x04) {
+        throw new Error('Expected uncompressed point format (0x04)')
+    }
+
+    const x = spkiDer.subarray(offset + 1, offset + 33)
+    const y = spkiDer.subarray(offset + 33, offset + 65)
+
+    // Compress: prefix is 0x02 if y is even, 0x03 if y is odd
+    const prefix = (y[31] & 1) === 0 ? 0x02 : 0x03
+    const compressed = new Uint8Array(33)
+    compressed[0] = prefix
+    compressed.set(x, 1)
+
+    return compressed
 }
 
 /**
