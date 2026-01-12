@@ -1,6 +1,6 @@
 {
   "name": "@substrate-system/crypt",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "CLI tool for creating and ecoding keys",
   "type": "module",
   "main": "dist/cli.js",
