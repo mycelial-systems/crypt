@@ -77,7 +77,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                         describe: 'Key type (required when ' +
                             'output-format is multi)',
                         type: 'string',
-                        choices: ['ed25519', 'rsa']
+                        choices: ['ed25519', 'rsa', 'k256']
                     })
                     .check((argv) => {
                         if (argv['output-format'] === 'multi' && !argv.type) {
@@ -95,7 +95,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                     input,
                 argv['input-format'] as u.SupportedEncodings|'multi',
                 argv['output-format'] as u.SupportedEncodings|'multi',
-                argv.type as 'ed25519'|'rsa'|undefined
+                argv.type as 'ed25519'|'rsa'|'k256'|undefined
                 )
                 console.log(result)
             }
@@ -202,7 +202,7 @@ async function keysCommand (args:{
                     'utf8'
                 )
                 // For JWK, also output the public key portion to stdout
-                console.log(JSON.stringify({ publicKey: result }))
+                console.log(JSON.stringify({ publicKey: result }, null, 2))
                 return
             } else if (
                 'privateKey' in result &&
@@ -214,16 +214,16 @@ async function keysCommand (args:{
 
             // Output only public key to stdout (for raw/PEM formats)
             if ('publicKey' in result) {
-                console.log(JSON.stringify({ publicKey: result.publicKey }))
+                console.log(JSON.stringify({ publicKey: result.publicKey }, null, 2))
             }
         } else {
             // Output to stdout
             if (publicFormat === 'jwk') {
                 // For JWK format, result is the JWK directly
-                console.log(JSON.stringify(result))
+                console.log(JSON.stringify(result, null, 2))
             } else {
                 // For raw format, result has publicKey and privateKey
-                console.log(JSON.stringify(result))
+                console.log(JSON.stringify(result, null, 2))
             }
         }
     } catch (err) {
@@ -239,7 +239,7 @@ async function encodeCommand (
     input:string,
     inputFormat:u.SupportedEncodings|'multi',
     outputFormat:u.SupportedEncodings|'multi',
-    keyType?:'ed25519'|'rsa'
+    keyType?:'ed25519'|'rsa'|'k256'
 ):Promise<string> {
     try {
         return await encode(input, {

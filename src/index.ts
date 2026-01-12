@@ -13,7 +13,7 @@ export async function encode (
     options:{
         inputFormat?:u.SupportedEncodings|'multi',
         outputFormat:u.SupportedEncodings|'multi',
-        keyType?:'ed25519'|'rsa'
+        keyType?:'ed25519'|'rsa'|'k256'
     }
 ):Promise<string> {
     const inputFormat = options.inputFormat || 'utf8'
@@ -36,6 +36,7 @@ export async function encode (
         // Strip multicodec prefix, since `formatOutput` will add it
         // Ed25519 varint prefix: [237, 1] (0xED, 0x01)
         // RSA varint prefix: [133, 36] (0x85, 0x24) encoding of 0x1205
+        // secp256k1 varint prefix: [231] (0xE7) encoding of 0xe7
         let keyBytes = bytes
         if (bytes.length > 2) {
             // Check for Ed25519 multicodec prefix (varint: 0xED, 0x01)
@@ -44,6 +45,9 @@ export async function encode (
             } else if (bytes[0] === 0x85 && bytes[1] === 0x24) {
                 // Check for RSA multicodec prefix (varint: 0x85, 0x24)
                 keyBytes = bytes.slice(2)
+            } else if (bytes[0] === 0xe7) {
+                // Check for secp256k1 multicodec prefix (0xE7)
+                keyBytes = bytes.slice(1)
             }
         }
         // For encode command, we're not dealing with SPKI format
@@ -68,6 +72,9 @@ export async function encode (
  * For RSA: Private keys are exported as PKCS#8 PEM or JWK,
  *          public keys as multikey format or JWK.
  *          Use 'sign' for RSA-PSS (signing), 'exchange' for RSA-OAEP (encryption).
+ * For k256 (secp256k1): By default (format 'raw'), private keys are exported as
+ *                       base64url-encoded, public keys as multikey format (compressed).
+ *                       Can use format 'jwk' for JWK format.
  */
 export async function keys (args:{
     keyType?:'ed25519'|'x25519'|'rsa'|'k256',
@@ -228,7 +235,7 @@ export async function keys (args:{
             const privateKeyJwk = privateKey.export({ format: 'jwk' })
             return privateKeyJwk as any
         } else {
-            // For 'raw' format, export keys as base64url
+            // For 'raw' format, export public key as multikey and private as base64url
             // Export private key as JWK to get the 'd' value
             const privateKeyJwk = privateKey.export({ format: 'jwk' }) as {
                 d?: string;
@@ -249,10 +256,17 @@ export async function keys (args:{
 
             // Extract raw public key from SPKI DER format and compress it
             const publicKeyCompressed = extractCompressedSecp256k1Key(publicKeyRaw)
-            const publicKeyEncoded = u.toString(publicKeyCompressed, 'base64url')
+
+            // Format as multikey (similar to Ed25519)
+            const publicKeyFormatted = await formatOutput(
+                publicKeyCompressed,
+                'multi',
+                'k256',
+                true
+            )
 
             return {
-                publicKey: publicKeyEncoded,
+                publicKey: publicKeyFormatted,
                 privateKey: privateKeyJwk.d
             }
         }
@@ -269,7 +283,7 @@ export async function keys (args:{
 export async function formatOutput (
     bytes:Uint8Array,
     format:u.SupportedEncodings|'did'|'multi'|'raw',
-    keyType?:'ed25519'|'rsa',
+    keyType?:'ed25519'|'rsa'|'k256',
     isPublicKey = false
 ):Promise<string> {
     // 'raw' format for public keys should use multikey format
@@ -279,16 +293,38 @@ export async function formatOutput (
 
     if (format === 'did') {
         // For DID format, we need raw key bytes
+        if (keyType === 'k256') {
+            // Manual DID encoding for k256 (not supported by publicKeyToDid)
+            // did:key format: did:key:<multibase-encoded-multicodec-key>
+            const multicodec = new Uint8Array([0xe7]) // secp256k1-pub
+            const combined = new Uint8Array(multicodec.length + bytes.length)
+            combined.set(multicodec, 0)
+            combined.set(bytes, multicodec.length)
+            const encoded = u.toString(combined, 'base58btc')
+            return `did:key:z${encoded}`
+        }
+
         let keyBytes = bytes
         if (keyType === 'rsa' && isPublicKey) {
             // Extract raw key from SPKI format
             keyBytes = extractRawRsaKey(bytes)
         }
-        return await publicKeyToDid(keyBytes, keyType)
+        return await publicKeyToDid(keyBytes, keyType as 'rsa'|'ed25519')
     }
 
     if (format === 'multi') {
         // Multikey format: use the multikey package
+        if (keyType === 'k256') {
+            // Manual multikey encoding for k256 (not supported by multikey.encode)
+            // Multikey format: multibase(multicodec-key-type || raw-public-key-bytes)
+            const multicodec = new Uint8Array([0xe7]) // secp256k1-pub
+            const combined = new Uint8Array(multicodec.length + bytes.length)
+            combined.set(multicodec, 0)
+            combined.set(bytes, multicodec.length)
+            // Encode with base58btc (z prefix)
+            return 'z' + u.toString(combined, 'base58btc')
+        }
+
         let keyBytes = bytes
         if (keyType === 'rsa' && isPublicKey) {
             // Extract raw key from SPKI format
@@ -297,7 +333,7 @@ export async function formatOutput (
         if (!keyType) {
             throw new Error('keyType is required for multikey format')
         }
-        return multikey.encode(keyBytes, keyType)
+        return multikey.encode(keyBytes, keyType as 'ed25519'|'rsa')
     }
 
     const encoded = u.toString(bytes, format as u.SupportedEncodings)
