@@ -28,7 +28,6 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@atproto/crypto": "^0.4.5",
     "@noble/curves": "^2.0.1",
     "@substrate-system/keys": "^0.2.40",
     "@substrate-system/multikey": "^0.0.4",

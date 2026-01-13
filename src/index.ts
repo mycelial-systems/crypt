@@ -1,12 +1,12 @@
 import * as u from 'uint8arrays'
 import * as multikey from '@substrate-system/multikey'
-import { Secp256k1Keypair } from '@atproto/crypto'
 import { publicKeyToDid } from '@substrate-system/keys/crypto'
 import {
     createPrivateKey,
     sign as cryptoSign,
     constants as cryptoConstants,
-    subtle
+    subtle,
+    generateKeyPairSync
 } from 'node:crypto'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 
@@ -254,49 +254,47 @@ export async function keys (args: {
     } else if (keyType === 'k256') {
         // secp256k1 - use Node.js crypto (not available in WebCrypto)
 
-        // const { privateKey, publicKey } = generateKeyPairSync('ec', {
-        //     namedCurve: 'secp256k1'
-        // })
-
-        const newKeypair = await Secp256k1Keypair.create({ exportable: true })
-        const privateKeyBytes = await newKeypair.export()
+        const { privateKey } = generateKeyPairSync('ec', {
+            namedCurve: 'secp256k1'
+        })
+        const jwk = privateKey.export({ format: 'jwk' }) as {
+            d:string
+            x:string
+            y:string
+            kty:string
+            crv:string
+        }
 
         if (publicFormat === 'jwk') {
-            // Return private key JWK directly
-            const uncompressedPub = secp256k1.getPublicKey(privateKeyBytes, false)
-            const x = uncompressedPub.subarray(1, 33)
-            const y = uncompressedPub.subarray(33, 65)
-
             return {
                 kty: 'EC',
                 crv: 'secp256k1',
-                x: u.toString(x, 'base64url'),
-                y: u.toString(y, 'base64url'),
-                d: u.toString(privateKeyBytes, 'base64url')
+                x: jwk.x,
+                y: jwk.y,
+                d: jwk.d
             } as any
-        } else {  // is raw or did format
-            // For 'raw' format, export public key as multikey and private
-            // as base64url
+        } else {
+            // Manual compression of public key
+            // Prefix: 0x02 if y is even, 0x03 if y is odd
+            const yBytes = u.fromString(jwk.y, 'base64url')
+            const isEven = (yBytes[yBytes.length - 1] % 2) === 0
+            const prefix = isEven ? 0x02 : 0x03
 
-            // Get private key as base64url
-            const privateKeyStr = u.toString(privateKeyBytes, 'base64url')
+            const xBytes = u.fromString(jwk.x, 'base64url')
+            const compressed = new Uint8Array(33)
+            compressed[0] = prefix
+            compressed.set(xBytes, 1)
 
-            // Derive public key (compressed 33 bytes)
-            const publicKeyCompressed = secp256k1.getPublicKey(privateKeyBytes, true)
-
-            // Format as multikey/did
             const publicKeyFormatted = await formatOutput(
-                publicKeyCompressed,
+                compressed,
                 publicFormat === 'did' ? 'did' : 'multi',
                 'k256',
                 true
             )
 
-            // console.log('coooooooooooooooooooooooooooooooked', publicKeyFormatted)
-
             return {
                 publicKey: publicKeyFormatted,
-                privateKey: privateKeyStr
+                privateKey: jwk.d
             }
         }
     }
