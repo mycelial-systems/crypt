@@ -1,7 +1,12 @@
 import * as u from 'uint8arrays'
 import * as multikey from '@substrate-system/multikey'
 import { publicKeyToDid } from '@substrate-system/keys/crypto'
-import { createPrivateKey, sign as cryptoSign, constants as cryptoConstants } from 'node:crypto'
+import {
+    createPrivateKey,
+    sign as cryptoSign,
+    constants as cryptoConstants,
+    generateKeyPairSync
+} from 'node:crypto'
 import { webcrypto } from '@substrate-system/one-webcrypto'
 
 /**
@@ -18,7 +23,6 @@ export async function encode (
 ):Promise<string> {
     const inputFormat = options.inputFormat || 'utf8'
     const outputFormat = options.outputFormat
-    // const useMultibase = options.useMultibase || false
     const keyType = options.keyType
 
     let bytes:Uint8Array
@@ -224,7 +228,6 @@ export async function keys (args:{
         }
     } else if (keyType === 'k256') {
         // secp256k1 - use Node.js crypto (not available in WebCrypto)
-        const { generateKeyPairSync } = await import('node:crypto')
 
         const { privateKey, publicKey } = generateKeyPairSync('ec', {
             namedCurve: 'secp256k1'
@@ -238,9 +241,9 @@ export async function keys (args:{
             // For 'raw' format, export public key as multikey and private as base64url
             // Export private key as JWK to get the 'd' value
             const privateKeyJwk = privateKey.export({ format: 'jwk' }) as {
-                d?: string;
-                x?: string;
-                y?: string;
+                d?:string;
+                x?:string;
+                y?:string;
             }
 
             if (!privateKeyJwk.d) {
@@ -315,8 +318,8 @@ export async function formatOutput (
     if (format === 'multi') {
         // Multikey format: use the multikey package
         if (keyType === 'k256') {
-            // Manual multikey encoding for k256 (not supported by multikey.encode)
-            // Multikey format: multibase(multicodec-key-type || raw-public-key-bytes)
+            // multikey encoding for k256 (not supported by multikey.encode)
+            // Multikey format: multibase(key-type || raw-public-key-bytes)
             const multicodec = new Uint8Array([0xe7]) // secp256k1-pub
             const combined = new Uint8Array(multicodec.length + bytes.length)
             combined.set(multicodec, 0)

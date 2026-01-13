@@ -254,7 +254,8 @@ PRIVATE_KEY=$(npx crypt keys | jq -r .privateKey)
 echo "important message" | npx crypt sign -k $PRIVATE_KEY
 ```
 
-The signature is output as a base64url-encoded string (Ed25519 signatures are 64 bytes, encoded as 86 characters).
+The signature is output as a base64url-encoded string
+(Ed25519 signatures are 64 bytes, encoded as 86 characters).
 
 ---
 
@@ -286,6 +287,10 @@ echo "SGVsbG8gV29ybGQ=" | npx crypt encode hex -i base64
 
 # Convert hex to base58btc
 echo "48656c6c6f" | npx crypt encode base58btc -i hex
+
+# Convert base64 to utf8
+echo "SGVsbG8gV29ybGQ=" | npx crypt encode utf8 -i base64
+# => Hello World
 
 # Pipe between commands (publicKey is in multikey format)
 npx crypt keys | jq -r .publicKey | npx crypt encode hex -i multi
