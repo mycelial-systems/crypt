@@ -23,6 +23,7 @@ Typescript API.
   * [Show Help Text](#show-help-text)
 - [Commands](#commands)
   * [`keys [keyType]`](#keys-keytype)
+  * [`public [privateKey]`](#public-privatekey)
   * [`sign [message]`](#sign-message)
   * [`encode [output-format]`](#encode-output-format)
   * [`decode [input-format]`](#decode-input-format)
@@ -30,6 +31,7 @@ Typescript API.
   * [Installation](#installation)
   * [Importing](#importing)
   * [`keys(options)`](#keysoptions)
+  * [`derivePublicKey(privateKey, options)`](#derivepublickeyprivatekey-options)
   * [`sign(message, options)`](#signmessage-options)
   * [`encode(input, options)`](#encodeinput-options)
   * [`decode(input, options)`](#decodeinput-options)
@@ -87,6 +89,9 @@ npx crypt keys rsa -o private.pem
 
 # Generate RSA keypair in JWK format (outputs both keys to stdout)
 npx crypt keys rsa -f jwk
+
+# Derive a public key from a private key
+npx crypt public <private-key> --type ed25519 --input base64url --format json
 
 # Sign a message
 npx crypt sign "my document" -k <private-key-seed>
@@ -210,6 +215,68 @@ npx crypt keys rsa -f jwk -u exchange
 npx crypt keys rsa -f jwk
 # => {...JWK with private key...}
 # (Returns private key JWK; public key components are included)
+```
+
+---
+
+### `public [privateKey]`
+
+Derive a public key from a private key. Supports Ed25519, X25519, RSA,
+and secp256k1 (k256) keys.
+
+#### Arguments
+
+* `privateKey` - The private key to derive the public key from (required)
+  - For Ed25519/X25519/k256: base64url-encoded seed or private key (32 bytes)
+  - For RSA: PEM-formatted PKCS#8 private key
+
+#### Options
+
+* `-t, --type` - **(required)** The key type
+  - `ed25519` - Ed25519 elliptic curve
+  - `x25519` - X25519 elliptic curve
+  - `rsa` - RSA key
+  - `k256` - secp256k1 elliptic curve
+
+* `-i, --input` - Input format for the private key (default: `hex`)
+  - `hex` - **(default)** Hexadecimal encoding
+  - `base64` - Standard base64 encoding
+  - `base64url` - Base64url encoding (no padding)
+
+* `-f, --format` - Output format (default: `json`)
+  - `json` - **(default)** JSON object with `{ publicKey, keyType }`.
+    `publicKey` is encoded in DID format.
+  - `hex` - Hexadecimal encoding of raw public key bytes
+  - `did` - DID format string (base58btc encoded, + `'did:key:'` prefix)
+  - `base64url` - Base64url encoding of raw public key bytes
+  - `base64` - Standard base64 encoding of raw public key bytes
+
+#### `public` Example
+
+```sh
+# Generate a keypair first
+npx crypt keys
+# => {"publicKey":"z6Mk...","privateKey":"PAjfFB2OvkWOGpO9iLqMujY8YucqHriHEtcdo4GhQDM"}
+
+# Derive the public key from the private key (JSON output)
+npx crypt public PAjfFB2OvkWOGpO9iLqMujY8YucqHriHEtcdo4GhQDM --type ed25519 --input base64url --format json
+# => {"publicKey":"z6MkoUHWDKfrsX2vpLaTTsMdLgCDFMzt4EJdZeTXQjbSPnsZ","keyType":"ed25519"}
+
+# Derive public key with hex output
+npx crypt public PAjfFB2OvkWOGpO9iLqMujY8YucqHriHEtcdo4GhQDM --type ed25519 --input base64url --format hex
+# => 85fc69b01232c576f559bb7a58bc445d27f1d4ee81c8abc62365e9cd97520e08
+
+# Derive k256 (secp256k1) public key
+npx crypt keys k256
+# => {"publicKey":"z6Du...","privateKey":"QsNnw8ZPGa4trwZeGBD7a_3gvfHI_32JCfFM1sfWZrA"}
+npx crypt public QsNnw8ZPGa4trwZeGBD7a_3gvfHI_32JCfFM1sfWZrA --type k256 --input base64url --format json
+# => {"publicKey":"z6Du2tMh3uXpN2ECugDAERcEuKmohcq6DqPkWakmsP9Wx3Ey","keyType":"k256"}
+
+# Derive X25519 public key
+npx crypt keys x25519
+# => {"publicKey":"jlWUipLpjNR_eDr7H_dBkLgtKQiY1zKMGMtC0bxyR0Q","privateKey":"kPF-xy_ZdTqUqRH6bLOXktRUDDCLUuI8gqMl-zNXG1o"}
+npx crypt public kPF-xy_ZdTqUqRH6bLOXktRUDDCLUuI8gqMl-zNXG1o --type x25519 --input base64url --format base64url
+# => jlWUipLpjNR_eDr7H_dBkLgtKQiY1zKMGMtC0bxyR0Q
 ```
 
 ---
@@ -342,7 +409,7 @@ npm i -S @substrate-system/crypt
 ### Importing
 
 ```js
-import { keys, sign, encode, decode } from '@substrate-system/crypt'
+import { keys, derivePublicKey, sign, encode, decode } from '@substrate-system/crypt'
 
 // Or import everything
 import * as crypt from '@substrate-system/crypt'
@@ -400,6 +467,82 @@ const rsaJwk = await keys({ keyType: 'rsa', format: 'jwk' })
 
 // Generate RSA encryption keypair
 const rsaEncryptJwk = await keys({ keyType: 'rsa', format: 'jwk', use: 'exchange' })
+```
+
+### `derivePublicKey(privateKey, options)`
+
+```ts
+async function derivePublicKey (
+    privateKeyInput:string,
+    opts:{
+        keyType:'ed25519'|'x25519'|'rsa'|'k256',
+        inputFormat?:'hex'|'base64'|'base64url',
+        outputFormat?:'json'|'hex'|'base64url'|'base64'
+    }
+):Promise<string|object>
+```
+
+Derive a public key from a private key. Supports Ed25519, X25519, RSA, and secp256k1 (k256) keys.
+
+#### Parameters
+
+- `privateKeyInput` (string) - The private key to derive from
+  * For Ed25519/X25519/k256: base64url-encoded seed or private key (32 bytes)
+  * For RSA: PEM-formatted PKCS#8 private key string
+- `opts` (object):
+  * `keyType` (`'ed25519'|'x25519'|'rsa'|'k256'`, required) - The type of key
+  * `inputFormat` (`'hex'|'base64'|'base64url'`, default: `'hex'`) - Format of the private key input
+  * `outputFormat` (`'json'|'hex'|'base64url'|'base64'`, default: `'json'`) - Output format
+
+#### Return value
+
+- For `json` format: `{ publicKey: string, keyType: string }`
+  * `publicKey` is in multikey format for Ed25519/RSA/k256, base64url for X25519
+- For `hex`, `base64url`, or `base64` formats: Returns the raw public key bytes in the requested encoding
+
+**Example:**
+
+```js
+import { keys, derivePublicKey } from '@substrate-system/crypt'
+
+// Generate an Ed25519 keypair
+const keypair = await keys()
+console.log(keypair.privateKey)  // PAjfFB2OvkWOGpO9iLqMujY8YucqHriHEtcdo4GhQDM
+
+// Derive the public key from the private key
+const result = await derivePublicKey(keypair.privateKey, {
+  keyType: 'ed25519',
+  inputFormat: 'base64url',
+  outputFormat: 'json'
+})
+console.log(result.publicKey)  // z6MkoUHWDKfrsX2vpLaTTsMdLgCDFMzt4EJdZeTXQjbSPnsZ
+console.log(result.keyType)    // ed25519
+
+// Get raw hex output
+const hexPublicKey = await derivePublicKey(keypair.privateKey, {
+  keyType: 'ed25519',
+  inputFormat: 'base64url',
+  outputFormat: 'hex'
+})
+console.log(hexPublicKey)  // 85fc69b01232c576f559bb7a58bc445d27f1d4ee81c8abc62365e9cd97520e08
+
+// Derive k256 (secp256k1) public key
+const k256Keys = await keys({ keyType: 'k256' })
+const k256Public = await derivePublicKey(k256Keys.privateKey, {
+  keyType: 'k256',
+  inputFormat: 'base64url',
+  outputFormat: 'json'
+})
+console.log(k256Public.publicKey)  // z6Du... (multikey format)
+
+// Derive X25519 public key
+const x25519Keys = await keys({ keyType: 'x25519' })
+const x25519Public = await derivePublicKey(x25519Keys.privateKey, {
+  keyType: 'x25519',
+  inputFormat: 'base64url',
+  outputFormat: 'base64url'
+})
+console.log(x25519Public)  // Base64url-encoded public key
 ```
 
 ### `sign(message, options)`

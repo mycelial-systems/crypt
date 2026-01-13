@@ -2,14 +2,63 @@
 import 'dotenv/config'
 import yargs from 'yargs'
 import { hideBin } from 'yargs/helpers'
-import type * as u from 'uint8arrays'
+import * as u from 'uint8arrays'
 import chalk from 'chalk'
 import { writeFileSync } from 'node:fs'
-import { keys, encode, decode, sign } from './index.js'
+import {
+    keys,
+    encode,
+    decode,
+    sign,
+    derivePublicKey,
+    formatOutput
+} from './index.js'
 
 // Only run CLI if this file is being executed directly
 if (import.meta.url === `file://${process.argv[1]}`) {
     await yargs(hideBin(process.argv))
+        .command(
+            'public <privateKey>',
+            'Get the public key or keypair given a private key',
+            (yargs) => {
+                return yargs
+                    .positional('private', {
+                        describe: 'The private key (hex encoded by default)',
+                        demandOption: true
+                    })
+                    .option('type', {
+                        alias: 't',
+                        describe: 'Type of the given private key',
+                        demandOption: true,
+                        type: 'string',
+                        choices: ['ed25519', 'x25519', 'rsa', 'k256']
+                    })
+                    .option('input', {
+                        alias: 'i',
+                        describe: 'Private key format',
+                        type: 'string',
+                        choices: ['hex', 'base64', 'base64url'],
+                        default: 'hex'
+                    })
+                    .option('format', {
+                        alias: 'f',
+                        describe: 'Output format for the public key. "json" ' +
+                            'means publicKey will be encoded as a DID format ' +
+                            'string (did:key:...)',
+                        type: 'string',
+                        default: 'json',
+                        choices: ['json', 'hex', 'base64url', 'base64', 'did']
+                    })
+            },
+            async argv => {
+                await publicCommand({
+                    privateKey: argv.privateKey as string,
+                    keyType: argv.type as 'ed25519'|'x25519'|'rsa'|'k256',
+                    format: argv.format as 'json'|'hex'|'base64url'|'base64'|'did',
+                    input: argv.input as 'hex'|'base64'|'base64url',
+                })
+            }
+        )
         .command(
             'keys [type]',
             'Create a new keypair',
@@ -25,7 +74,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                         alias: 'f',
                         describe: 'Output format',
                         type: 'string',
-                        choices: ['raw', 'jwk'],
+                        choices: ['raw', 'jwk', 'did'],
                         default: 'raw'
                     })
                     .option('output', {
@@ -45,10 +94,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             },
             async (argv) => {
                 await keysCommand({
-                    keyType: argv.type as 'ed25519'|'x25519'|'rsa'|'k256',
-                    format: argv.format as 'raw'|'jwk',
-                    output: argv.output as string|undefined,
-                    use: argv.use as 'sign'|'exchange'
+                    keyType: argv.type as 'ed25519' | 'x25519' | 'rsa' | 'k256',
+                    format: argv.format as 'raw' | 'jwk' | 'did',
+                    output: argv.output as string | undefined,
+                    use: argv.use as 'sign' | 'exchange'
                 })
             }
         )
@@ -82,7 +131,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                     .check((argv) => {
                         if (argv['output-format'] === 'multi' && !argv.type) {
                             throw new Error('--type is required when ' +
-                            'output-format is "multi"')
+                                'output-format is "multi"')
                         }
                         return true
                     })
@@ -93,9 +142,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
                 const result = await encodeCommand(
                     input,
-                argv['input-format'] as u.SupportedEncodings|'multi',
-                argv['output-format'] as u.SupportedEncodings|'multi',
-                argv.type as 'ed25519'|'rsa'|'k256'|undefined
+                    argv['input-format'] as u.SupportedEncodings | 'multi',
+                    argv['output-format'] as u.SupportedEncodings | 'multi',
+                    argv.type as 'ed25519' | 'rsa' | 'k256' | undefined
                 )
                 console.log(result)
             }
@@ -114,12 +163,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                     })
             },
             async (argv) => {
-            // Read from stdin
+                // Read from stdin
                 const input = (await readStdin()).trim()
 
                 const result = await decodeCommand(
                     input,
-                argv['input-format'] as u.SupportedEncodings
+                    argv['input-format'] as u.SupportedEncodings
                 )
                 console.log(result)
             }
@@ -143,7 +192,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             },
             async (argv) => {
                 // If message is not provided as argument, read from stdin
-                let message:string
+                let message: string
                 if (argv.message) {
                     message = argv.message
                 } else {
@@ -152,7 +201,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
                 const result = await signCommand(
                     message,
-                argv.key as string
+                    argv.key as string
                 )
                 console.log(result)
             }
@@ -166,11 +215,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 /**
  * CLI command handler for keys command.
  */
-async function keysCommand (args:{
-    keyType:'ed25519'|'x25519'|'rsa'|'k256',
-    format?:'raw'|'jwk',
-    output?:string,
-    use?:'sign'|'exchange'
+async function keysCommand (args: {
+    keyType: 'ed25519' | 'x25519' | 'rsa' | 'k256',
+    format: 'did' | 'raw' | 'jwk',
+    output?: string,  // the file path to write output to
+    use?: 'sign' | 'exchange'
 } = { keyType: 'ed25519', format: 'raw' }) {
     const publicFormat = args.format || 'raw'
 
@@ -214,7 +263,9 @@ async function keysCommand (args:{
 
             // Output only public key to stdout (for raw/PEM formats)
             if ('publicKey' in result) {
-                console.log(JSON.stringify({ publicKey: result.publicKey }, null, 2))
+                console.log(
+                    JSON.stringify({ publicKey: result.publicKey }, null, 2)
+                )
             }
         } else {
             // Output to stdout
@@ -233,14 +284,50 @@ async function keysCommand (args:{
 }
 
 /**
+ * CLI command handler for public command.
+ */
+async function publicCommand (args: {
+    privateKey: string,
+    keyType: 'ed25519' | 'x25519' | 'rsa' | 'k256',
+    format: 'json' | 'hex' | 'base64url' | 'base64' | 'did',
+    input: 'hex' | 'base64' | 'base64url'
+}) {
+    try {
+        const result = await derivePublicKey(args.privateKey, {
+            keyType: args.keyType,
+            inputFormat: args.input,
+        })
+
+        const { format, privateKey, keyType } = args
+        if (format === 'json') {
+            // print JSON with keys
+            console.log(JSON.stringify({
+                publicKey: await formatOutput(result, 'did', keyType, true),
+                privateKey,
+                keyType
+            }, null, 2))
+        } else if (format === 'did') {
+            // return just the did encoded public key
+            console.log(await formatOutput(result, 'did', keyType, true))
+        } else {
+            // not JSON format, log just the public key
+            console.log(u.toString(result, format))
+        }
+    } catch (err) {
+        console.error(chalk.red('Error deriving public key:'), err)
+        process.exit(1)
+    }
+}
+
+/**
  * CLI command handler for encode command.
  */
 async function encodeCommand (
-    input:string,
-    inputFormat:u.SupportedEncodings|'multi',
-    outputFormat:u.SupportedEncodings|'multi',
-    keyType?:'ed25519'|'rsa'|'k256'
-):Promise<string> {
+    input: string,
+    inputFormat: u.SupportedEncodings | 'multi',
+    outputFormat: u.SupportedEncodings | 'multi',
+    keyType?: 'ed25519' | 'rsa' | 'k256'
+): Promise<string> {
     try {
         return await encode(input, {
             inputFormat,
@@ -257,9 +344,9 @@ async function encodeCommand (
  * CLI command handler for decode command.
  */
 async function decodeCommand (
-    input:string,
-    inputFormat:u.SupportedEncodings
-):Promise<string> {
+    input: string,
+    inputFormat: u.SupportedEncodings
+): Promise<string> {
     try {
         return await decode(input, { inputFormat })
     } catch (err) {
@@ -272,9 +359,9 @@ async function decodeCommand (
  * CLI command handler for sign command.
  */
 async function signCommand (
-    message:string,
-    privateKeySeed:string
-):Promise<string> {
+    message: string,
+    privateKeySeed: string
+): Promise<string> {
     try {
         return await sign(message, { key: privateKeySeed })
     } catch (err) {
@@ -286,9 +373,9 @@ async function signCommand (
 /**
  * Read all data from stdin.
  */
-async function readStdin ():Promise<string> {
+async function readStdin (): Promise<string> {
     return new Promise((resolve, reject) => {
-        const chunks:Buffer[] = []
+        const chunks: Buffer[] = []
         process.stdin.on('data', (chunk) => {
             chunks.push(chunk)
         })

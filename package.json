@@ -18,7 +18,7 @@
   },
   "scripts": {
     "lint": "eslint \"./**/*.{ts,js}\"",
-    "test": "npm run build && esbuild test/index.ts --platform=node --format=esm --keep-names --bundle --external:crypto --external:@substrate-system/keys/crypto --external:dotenv --external:fs --external:path --external:os | node --input-type=module",
+    "test": "npm run build && esbuild test/index.ts --platform=node --format=esm --keep-names --bundle --external:crypto --external:@substrate-system/keys/crypto --external:dotenv --external:fs --external:path --external:os --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" | node --input-type=module",
     "build-esm": "esbuild src/*.ts --format=esm --metafile=dist/meta.json --keep-names --tsconfig=tsconfig.build.json --outdir=./dist --sourcemap && tsc --emitDeclarationOnly --project tsconfig.build.json --outDir dist",
     "build": "mkdir -p ./dist && rm -rf ./dist/* && npm run build-esm",
     "toc": "markdown-toc --maxdepth 3 -i README.md",
@@ -28,9 +28,10 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@atproto/crypto": "^0.4.5",
+    "@noble/curves": "^2.0.1",
     "@substrate-system/keys": "^0.2.40",
     "@substrate-system/multikey": "^0.0.4",
-    "@substrate-system/one-webcrypto": "^1.1.3",
     "@types/yargs": "^17.0.35",
     "chalk": "^5.6.2",
     "dotenv": "^17.2.3",

@@ -1,31 +1,37 @@
 import * as u from 'uint8arrays'
 import * as multikey from '@substrate-system/multikey'
+import { Secp256k1Keypair } from '@atproto/crypto'
 import { publicKeyToDid } from '@substrate-system/keys/crypto'
 import {
     createPrivateKey,
     sign as cryptoSign,
     constants as cryptoConstants,
-    generateKeyPairSync
+    subtle
 } from 'node:crypto'
-import { webcrypto } from '@substrate-system/one-webcrypto'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
+
+export type SerializedKeypair = {
+    publicKey: string;
+    privateKey: string;
+}
 
 /**
  * Encode a string in one format to a different format.
  * Core API function that returns the encoded string.
  */
 export async function encode (
-    input:string,
-    options:{
-        inputFormat?:u.SupportedEncodings|'multi',
-        outputFormat:u.SupportedEncodings|'multi',
-        keyType?:'ed25519'|'rsa'|'k256'
+    input: string,
+    options: {
+        inputFormat?: u.SupportedEncodings | 'multi',
+        outputFormat: u.SupportedEncodings | 'multi',
+        keyType?: 'ed25519' | 'rsa' | 'k256'
     }
-):Promise<string> {
+): Promise<string> {
     const inputFormat = options.inputFormat || 'utf8'
     const outputFormat = options.outputFormat
     const keyType = options.keyType
 
-    let bytes:Uint8Array
+    let bytes: Uint8Array
 
     // Handle multibase input format
     if (inputFormat === 'multi') {
@@ -49,8 +55,11 @@ export async function encode (
             } else if (bytes[0] === 0x85 && bytes[1] === 0x24) {
                 // Check for RSA multicodec prefix (varint: 0x85, 0x24)
                 keyBytes = bytes.slice(2)
+            } else if (bytes[0] === 0xe7 && bytes[1] === 0x01) {
+                // Check for secp256k1 multicodec prefix (varint: 0xE7, 0x01)
+                keyBytes = bytes.slice(2)
             } else if (bytes[0] === 0xe7) {
-                // Check for secp256k1 multicodec prefix (0xE7)
+                // Legacy secp256k1 multicodec prefix (0xE7)
                 keyBytes = bytes.slice(1)
             }
         }
@@ -77,24 +86,25 @@ export async function encode (
  *          public keys as multikey format or JWK.
  *          Use 'sign' for RSA-PSS (signing), 'exchange' for RSA-OAEP (encryption).
  * For k256 (secp256k1): By default (format 'raw'), private keys are exported as
- *                       base64url-encoded, public keys as multikey format (compressed).
+ *                       base64url-encoded, public keys as multikey
+ *                       format (compressed).
  *                       Can use format 'jwk' for JWK format.
  */
-export async function keys (args:{
-    keyType?:'ed25519'|'x25519'|'rsa'|'k256',
-    format?:'raw'|'jwk',
-    use?:'sign'|'exchange'
-} = {}):Promise<{
-    publicKey:string|object,
-    privateKey?:string|object,
-    privateKeyPem?:string
+export async function keys (args: {
+    keyType?: 'ed25519' | 'x25519' | 'rsa' | 'k256',
+    format?: 'raw' | 'jwk' | 'did',
+    use?: 'sign' | 'exchange'
+} = {}): Promise<{
+    publicKey: string | object,
+    privateKey?: string | object,
+    privateKeyPem?: string
 }> {
     const keyType = args.keyType || 'ed25519'
     const publicFormat = args.format || 'raw'
     const use = args.use || 'sign'
 
     if (keyType === 'ed25519') {
-        const keypair = await webcrypto.subtle.generateKey(
+        const keypair = await subtle.generateKey(
             {
                 name: 'Ed25519',
                 namedCurve: 'Ed25519'
@@ -103,7 +113,7 @@ export async function keys (args:{
             ['sign', 'verify']
         )
 
-        const privateKeyJwk = await webcrypto.subtle.exportKey(
+        const privateKeyJwk = await subtle.exportKey(
             'jwk',
             keypair.privateKey
         )
@@ -114,16 +124,27 @@ export async function keys (args:{
             return privateKeyJwk as any
         } else {
             // For 'raw' format, use multikey for public key
-            const publicKey = await webcrypto.subtle.exportKey(
+            const publicKey = await subtle.exportKey(
                 'raw',
                 keypair.publicKey
             )
-            const publicKeyFormatted = await formatOutput(
-                new Uint8Array(publicKey),
-                'multi',
-                'ed25519',
-                true
-            )
+
+            let publicKeyFormatted
+            if (publicFormat === 'did') {
+                publicKeyFormatted = await formatOutput(
+                    new Uint8Array(publicKey),
+                    'did',
+                    'ed25519',
+                    true
+                )
+            } else {
+                publicKeyFormatted = await formatOutput(
+                    new Uint8Array(publicKey),
+                    'multi',
+                    'ed25519',
+                    true
+                )
+            }
 
             // Extract seed from JWK 'd' field (already base64url encoded)
             if (!privateKeyJwk.d) {
@@ -136,7 +157,7 @@ export async function keys (args:{
             }
         }
     } else if (keyType === 'x25519') {
-        const keypair = await webcrypto.subtle.generateKey(
+        const keypair = await subtle.generateKey(
             {
                 name: 'X25519',
                 namedCurve: 'X25519'
@@ -145,7 +166,7 @@ export async function keys (args:{
             ['deriveKey', 'deriveBits']
         )
 
-        const privateKeyJwk = await webcrypto.subtle.exportKey(
+        const privateKeyJwk = await subtle.exportKey(
             'jwk',
             keypair.privateKey
         )
@@ -154,15 +175,19 @@ export async function keys (args:{
             // Return private key JWK directly
             // (which contains public key in 'x' field)
             return privateKeyJwk as any
-        } else {
-            // For 'raw' format, export keys as base64url
-            const publicKey = await webcrypto.subtle.exportKey(
+        } else {  // is raw or did format
+            // For 'raw' format, export private key as base64url,
+            // public key as multikey
+            const publicKey = await subtle.exportKey(
                 'raw',
                 keypair.publicKey
             )
-            const publicKeyEncoded = u.toString(
+
+            const publicKeyEncoded = await formatOutput(
                 new Uint8Array(publicKey),
-                'base64url'
+                publicFormat === 'did' ? 'did' : 'multi',
+                'x25519',
+                true
             )
 
             // Extract seed from JWK 'd' field (already base64url encoded)
@@ -177,13 +202,13 @@ export async function keys (args:{
         }
     } else if (keyType === 'rsa') {
         const algorithmName = use === 'exchange' ? 'RSA-OAEP' : 'RSA-PSS'
-        const keyUsages:(
+        const keyUsages: (
             'encrypt' | 'decrypt' | 'sign' | 'verify'
         )[] = use === 'exchange' ?
             ['encrypt', 'decrypt'] :
             ['sign', 'verify']
 
-        const keypair = await webcrypto.subtle.generateKey(
+        const keypair = await subtle.generateKey(
             {
                 name: algorithmName,
                 modulusLength: 2048,
@@ -196,19 +221,19 @@ export async function keys (args:{
 
         if (publicFormat === 'jwk') {
             // Return private key JWK directly (contains public key components)
-            const privateKey = await webcrypto.subtle.exportKey(
+            const privateKey = await subtle.exportKey(
                 'jwk',
                 keypair.privateKey
             )
 
             return privateKey as any
-        } else {
+        } else {  // is raw or did format
             // For 'raw' format, export as PKCS#8 PEM and multikey
-            const publicKey = await webcrypto.subtle.exportKey(
+            const publicKey = await subtle.exportKey(
                 'spki',
                 keypair.publicKey
             )
-            const privateKey = await webcrypto.subtle.exportKey(
+            const privateKey = await subtle.exportKey(
                 'pkcs8',
                 keypair.privateKey
             )
@@ -216,7 +241,7 @@ export async function keys (args:{
             const pem = pkcs8ToPem(new Uint8Array(privateKey))
             const publicKeyFormatted = await formatOutput(
                 new Uint8Array(publicKey),
-                'multi',
+                publicFormat === 'did' ? 'did' : 'multi',
                 'rsa',
                 true
             )
@@ -229,48 +254,49 @@ export async function keys (args:{
     } else if (keyType === 'k256') {
         // secp256k1 - use Node.js crypto (not available in WebCrypto)
 
-        const { privateKey, publicKey } = generateKeyPairSync('ec', {
-            namedCurve: 'secp256k1'
-        })
+        // const { privateKey, publicKey } = generateKeyPairSync('ec', {
+        //     namedCurve: 'secp256k1'
+        // })
+
+        const newKeypair = await Secp256k1Keypair.create({ exportable: true })
+        const privateKeyBytes = await newKeypair.export()
 
         if (publicFormat === 'jwk') {
             // Return private key JWK directly
-            const privateKeyJwk = privateKey.export({ format: 'jwk' })
-            return privateKeyJwk as any
-        } else {
-            // For 'raw' format, export public key as multikey and private as base64url
-            // Export private key as JWK to get the 'd' value
-            const privateKeyJwk = privateKey.export({ format: 'jwk' }) as {
-                d?:string;
-                x?:string;
-                y?:string;
-            }
+            const uncompressedPub = secp256k1.getPublicKey(privateKeyBytes, false)
+            const x = uncompressedPub.subarray(1, 33)
+            const y = uncompressedPub.subarray(33, 65)
 
-            if (!privateKeyJwk.d) {
-                throw new Error('Private key JWK missing "d" field')
-            }
+            return {
+                kty: 'EC',
+                crv: 'secp256k1',
+                x: u.toString(x, 'base64url'),
+                y: u.toString(y, 'base64url'),
+                d: u.toString(privateKeyBytes, 'base64url')
+            } as any
+        } else {  // is raw or did format
+            // For 'raw' format, export public key as multikey and private
+            // as base64url
 
-            // Export public key in compressed format (33 bytes)
-            // SEC1 compressed format: 0x02/0x03 prefix + x coordinate
-            const publicKeyRaw = publicKey.export({
-                format: 'der',
-                type: 'spki'
-            })
+            // Get private key as base64url
+            const privateKeyStr = u.toString(privateKeyBytes, 'base64url')
 
-            // Extract raw public key from SPKI DER format and compress it
-            const publicKeyCompressed = extractCompressedSecp256k1Key(publicKeyRaw)
+            // Derive public key (compressed 33 bytes)
+            const publicKeyCompressed = secp256k1.getPublicKey(privateKeyBytes, true)
 
-            // Format as multikey (similar to Ed25519)
+            // Format as multikey/did
             const publicKeyFormatted = await formatOutput(
                 publicKeyCompressed,
-                'multi',
+                publicFormat === 'did' ? 'did' : 'multi',
                 'k256',
                 true
             )
 
+            // console.log('coooooooooooooooooooooooooooooooked', publicKeyFormatted)
+
             return {
                 publicKey: publicKeyFormatted,
-                privateKey: privateKeyJwk.d
+                privateKey: privateKeyStr
             }
         }
     }
@@ -284,11 +310,11 @@ export async function keys (args:{
  * (converted to 'multi' for public keys).
  */
 export async function formatOutput (
-    bytes:Uint8Array,
-    format:u.SupportedEncodings|'did'|'multi'|'raw',
-    keyType?:'ed25519'|'rsa'|'k256',
+    bytes: Uint8Array,
+    format: u.SupportedEncodings | 'did' | 'multi' | 'raw',
+    keyType?: 'ed25519' | 'x25519' | 'rsa' | 'k256',
     isPublicKey = false
-):Promise<string> {
+): Promise<string> {
     // 'raw' format for public keys should use multikey format
     if (format === 'raw') {
         format = 'multi'
@@ -299,7 +325,8 @@ export async function formatOutput (
         if (keyType === 'k256') {
             // Manual DID encoding for k256 (not supported by publicKeyToDid)
             // did:key format: did:key:<multibase-encoded-multicodec-key>
-            const multicodec = new Uint8Array([0xe7]) // secp256k1-pub
+            // secp256k1-pub multicodec is 0xe7, which is 0xe7 0x01 as varint
+            const multicodec = new Uint8Array([0xe7, 0x01])
             const combined = new Uint8Array(multicodec.length + bytes.length)
             combined.set(multicodec, 0)
             combined.set(bytes, multicodec.length)
@@ -312,7 +339,7 @@ export async function formatOutput (
             // Extract raw key from SPKI format
             keyBytes = extractRawRsaKey(bytes)
         }
-        return await publicKeyToDid(keyBytes, keyType as 'rsa'|'ed25519')
+        return await publicKeyToDid(keyBytes, keyType as 'rsa' | 'ed25519')
     }
 
     if (format === 'multi') {
@@ -320,7 +347,8 @@ export async function formatOutput (
         if (keyType === 'k256') {
             // multikey encoding for k256 (not supported by multikey.encode)
             // Multikey format: multibase(key-type || raw-public-key-bytes)
-            const multicodec = new Uint8Array([0xe7]) // secp256k1-pub
+            // secp256k1-pub multicodec is 0xe7, which is 0xe7 0x01 as varint
+            const multicodec = new Uint8Array([0xe7, 0x01])
             const combined = new Uint8Array(multicodec.length + bytes.length)
             combined.set(multicodec, 0)
             combined.set(bytes, multicodec.length)
@@ -336,7 +364,7 @@ export async function formatOutput (
         if (!keyType) {
             throw new Error('keyType is required for multikey format')
         }
-        return multikey.encode(keyBytes, keyType as 'ed25519'|'rsa')
+        return multikey.encode(keyBytes, keyType as 'ed25519' | 'rsa')
     }
 
     const encoded = u.toString(bytes, format as u.SupportedEncodings)
@@ -347,7 +375,7 @@ export async function formatOutput (
 /**
  * Convert PKCS#8 DER bytes to PEM format.
  */
-function pkcs8ToPem (der:Uint8Array):string {
+function pkcs8ToPem (der: Uint8Array): string {
     const base64 = u.toString(der, 'base64pad')
     const pem = [
         '-----BEGIN PRIVATE KEY-----',
@@ -362,7 +390,7 @@ function pkcs8ToPem (der:Uint8Array):string {
  * SPKI structure contains algorithm identifier and other metadata.
  * We need just the raw key bytes for multikey encoding.
  */
-function extractRawRsaKey (spkiBytes:Uint8Array):Uint8Array {
+function extractRawRsaKey (spkiBytes: Uint8Array): Uint8Array {
     // For RSA keys in SPKI format, the raw key is embedded in the BIT STRING
     // We need to parse the ASN.1 structure to extract it
     // This is a simplified parser that works for standard RSA SPKI keys
@@ -425,91 +453,11 @@ function extractRawRsaKey (spkiBytes:Uint8Array):Uint8Array {
 }
 
 /**
- * Extract and compress a secp256k1 public key from SPKI DER format.
- * Returns 33-byte compressed format (0x02/0x03 prefix + x coordinate).
- */
-function extractCompressedSecp256k1Key (spkiDer:Buffer):Uint8Array {
-    // SPKI for EC keys contains:
-    // SEQUENCE {
-    //   SEQUENCE { algorithm OID, curve OID }
-    //   BIT STRING { uncompressed point: 04 || x || y }
-    // }
-    // For secp256k1, the uncompressed point is 65 bytes (1 + 32 + 32)
-
-    // Find the BIT STRING containing the public key
-    // It starts with 0x03 (BIT STRING tag) followed by length
-    let offset = 0
-
-    // Skip outer SEQUENCE
-    if (spkiDer[offset] !== 0x30) {
-        throw new Error('Invalid SPKI format: expected SEQUENCE')
-    }
-    offset++
-
-    // Skip length
-    if (spkiDer[offset] & 0x80) {
-        offset += 1 + (spkiDer[offset] & 0x7f)
-    } else {
-        offset++
-    }
-
-    // Skip algorithm SEQUENCE
-    if (spkiDer[offset] !== 0x30) {
-        throw new Error('Invalid SPKI format: expected algorithm SEQUENCE')
-    }
-    offset++
-
-    const algLength = spkiDer[offset]
-    if (algLength & 0x80) {
-        const lengthOfLength = algLength & 0x7f
-        let len = 0
-        for (let i = 0; i < lengthOfLength; i++) {
-            len = (len << 8) | spkiDer[offset + 1 + i]
-        }
-        offset += 1 + lengthOfLength + len
-    } else {
-        offset += 1 + algLength
-    }
-
-    // Now at BIT STRING
-    if (spkiDer[offset] !== 0x03) {
-        throw new Error('Invalid SPKI format: expected BIT STRING')
-    }
-    offset++
-
-    // Skip BIT STRING length
-    if (spkiDer[offset] & 0x80) {
-        offset += 1 + (spkiDer[offset] & 0x7f)
-    } else {
-        offset++
-    }
-
-    // Skip unused bits count (should be 0)
-    offset++
-
-    // Now we should have the uncompressed point: 04 || x (32 bytes) || y (32 bytes)
-    if (spkiDer[offset] !== 0x04) {
-        throw new Error('Expected uncompressed point format (0x04)')
-    }
-
-    const x = spkiDer.subarray(offset + 1, offset + 33)
-    const y = spkiDer.subarray(offset + 33, offset + 65)
-
-    // Compress: prefix is 0x02 if y is even, 0x03 if y is odd
-    const prefix = (y[31] & 1) === 0 ? 0x02 : 0x03
-    const compressed = new Uint8Array(33)
-    compressed[0] = prefix
-    compressed.set(x, 1)
-
-    return compressed
-}
-
-/**
  * Get the multibase prefix for a given encoding format.
  * @see https://github.com/multiformats/multibase
  */
-export function getMultibasePrefix (format:u.SupportedEncodings):string {
-    const prefixes:Record<string, string> = {
+export function getMultibasePrefix (format: u.SupportedEncodings): string {
+    const prefixes: Record<string, string> = {
         base64: 'm',
         base64pad: 'M',
         base64url: 'u',
@@ -526,9 +474,9 @@ export function getMultibasePrefix (format:u.SupportedEncodings):string {
  * Detect the encoding format from a multibase prefix.
  * @see https://github.com/multiformats/multibase
  */
-function detectMultibaseFormat (input:string):{
-    format:u.SupportedEncodings,
-    data:string
+function detectMultibaseFormat (input: string): {
+    format: u.SupportedEncodings,
+    data: string
 } {
     if (input.length === 0) {
         throw new Error('Empty input string')
@@ -537,7 +485,7 @@ function detectMultibaseFormat (input:string):{
     const prefix = input[0]
     const data = input.slice(1)
 
-    const formatMap:Record<string, u.SupportedEncodings> = {
+    const formatMap: Record<string, u.SupportedEncodings> = {
         m: 'base64',
         M: 'base64pad',
         u: 'base64url',
@@ -559,9 +507,9 @@ function detectMultibaseFormat (input:string):{
  * Core API function that returns the decoded string.
  */
 export async function decode (
-    input:string,
-    options:{ inputFormat:u.SupportedEncodings }
-):Promise<string> {
+    input: string,
+    options: { inputFormat: u.SupportedEncodings }
+): Promise<string> {
     const inputFormat = options.inputFormat
 
     // Decode from the input format to Uint8Array
@@ -572,14 +520,134 @@ export async function decode (
 }
 
 /**
+ * Derive a public key from a private key.
+ *
+ * @param {string} privateKeyInput The private key
+ * @param { { keyType, inputFormat } } opts Input and output
+ *  encoding formats and key type eg rsa, x25519, etc
+ * @returns {Promise<Uint8Array<ArrayBuffer>>} The buffer of the public key
+ */
+export async function derivePublicKey (
+    privateKeyInput: string,
+    opts: {
+        keyType: 'ed25519' | 'x25519' | 'rsa' | 'k256',
+        inputFormat?: 'hex' | 'base64' | 'base64url',
+    }
+): Promise<Uint8Array<ArrayBuffer>> {
+    const keyType = opts.keyType
+    const inputFormat = opts.inputFormat || 'hex'
+
+    let publicKeyBytes: Uint8Array
+    // let publicKeyFormatted:string
+
+    if (keyType === 'ed25519') {
+        // Ed25519: private key is a seed (32 bytes)
+        const seedBytes = u.fromString(
+            privateKeyInput,
+            inputFormat as u.SupportedEncodings
+        )
+
+        // Create a JWK with the seed
+        // Note: Setting x: '' allows Node.js to auto-derive the public key
+        const privateKeyJwk = {
+            kty: 'OKP',
+            crv: 'Ed25519',
+            d: u.toString(seedBytes, 'base64url'),
+            x: '' // Will be derived by Node.js
+        }
+
+        // Use Node.js crypto to import and derive the public key
+        const privateKey = createPrivateKey({
+            key: privateKeyJwk,
+            format: 'jwk'
+        })
+
+        // Export the public key as JWK
+        const publicKeyJwk = privateKey.export({ format: 'jwk' }) as {
+            x?: string;
+            y?: string;
+        }
+        if (!publicKeyJwk.x) {
+            throw new Error('Failed to derive public key')
+        }
+
+        // Get raw public key bytes
+        publicKeyBytes = u.fromString(publicKeyJwk.x, 'base64url')
+
+        return publicKeyBytes as Uint8Array<ArrayBuffer>
+    } else if (keyType === 'x25519') {
+        // X25519: private key is a seed (32 bytes)
+        const seedBytes = u.fromString(
+            privateKeyInput,
+            inputFormat as u.SupportedEncodings
+        )
+
+        // Create a JWK with the seed
+        // Note: Setting x: '' allows Node.js to auto-derive the public key
+        const privateKeyJwk = {
+            kty: 'OKP',
+            crv: 'X25519',
+            d: u.toString(seedBytes, 'base64url'),
+            x: '' // Will be derived by Node.js
+        }
+
+        // Use Node.js crypto to import and derive the public key
+        const privateKey = createPrivateKey({
+            key: privateKeyJwk,
+            format: 'jwk'
+        })
+
+        // Export the public key as JWK
+        const publicKeyJwk = privateKey.export({ format: 'jwk' }) as {
+            x?: string;
+            y?: string;
+        }
+        if (!publicKeyJwk.x) {
+            throw new Error('Failed to derive public key')
+        }
+
+        // Get raw public key bytes
+        publicKeyBytes = u.fromString(publicKeyJwk.x, 'base64url')
+        return publicKeyBytes as Uint8Array<ArrayBuffer>
+
+        // publicKeyFormatted = u.toString(publicKeyBytes, 'base64url')
+    } else if (keyType === 'rsa') {
+        // RSA: private key is in PEM format (PKCS#8)
+        const privateKey = createPrivateKey(privateKeyInput)
+
+        // Export as SPKI to get the public key
+        const publicKeyDer = privateKey.export({
+            type: 'spki',
+            format: 'der'
+        })
+
+        publicKeyBytes = new Uint8Array(publicKeyDer)
+        return publicKeyBytes as Uint8Array<ArrayBuffer>
+    } else if (keyType === 'k256') {
+        // secp256k1: private key is the 'd' component (32 bytes)
+        const seedBytes = u.fromString(
+            privateKeyInput,
+            inputFormat as u.SupportedEncodings
+        )
+
+        // Use @noble/curves to derive the public key
+        // getPublicKey returns the compressed public key (33 bytes)
+        publicKeyBytes = secp256k1.getPublicKey(seedBytes, true)
+        return publicKeyBytes as Uint8Array<ArrayBuffer>
+    } else {
+        throw new Error(`Unsupported keyType: ${keyType}`)
+    }
+}
+
+/**
  * Sign a message with a private key.
  * Core API function that returns the signature.
  * Supports both Ed25519 (base64url-encoded seed) and RSA (PEM format) keys.
  */
 export async function sign (
-    message:string,
-    options:{ key:string }
-):Promise<string> {
+    message: string,
+    options: { key: string }
+): Promise<string> {
     const privateKeyInput = options.key
 
     // Validate that message is not empty
@@ -591,8 +659,8 @@ export async function sign (
     const messageBytes = u.fromString(message, 'utf8')
 
     // Detect key type based on format
-    let privateKey:ReturnType<typeof createPrivateKey>
-    let signature:Buffer
+    let privateKey: ReturnType<typeof createPrivateKey>
+    let signature: Buffer
 
     if (privateKeyInput.startsWith('-----BEGIN')) {
         // RSA key in PEM format (PKCS#8)

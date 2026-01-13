@@ -2,7 +2,14 @@ import { test } from '@substrate-system/tapzero'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import * as u from 'uint8arrays'
-import { sign, encode, decode, keys } from '../src/index.js'
+import {
+    sign,
+    encode,
+    decode,
+    keys,
+    derivePublicKey,
+    type SerializedKeypair
+} from '../src/index.js'
 
 const CLI_PATH = join(process.cwd(), 'dist', 'cli.js')
 
@@ -124,14 +131,15 @@ test('`keys` generates k256 (secp256k1) keypair in raw format', async t => {
         'k256 public key should be in multikey format (z prefix for base58btc)')
 
     // Decode multikey to verify it's 34 bytes
-    // (1 byte multicodec + 33 bytes compressed key)
+    // (2 bytes multicodec varint + 33 bytes compressed key)
     const multikey = output.publicKey.slice(1) // Remove 'z' prefix
     const decoded = u.fromString(multikey, 'base58btc')
-    t.equal(decoded.length, 34,
-        'decoded multikey should be 34 bytes (1 multicodec + 33 compressed key)')
+    t.equal(decoded.length, 35,
+        'decoded multikey should be 35 bytes (2 multicodec + 33 compressed key)')
     t.equal(decoded[0], 0xe7, 'first byte should be 0xe7 (secp256k1 multicodec)')
-    // Second byte should be 0x02 or 0x03 (compressed key prefix)
-    t.ok(decoded[1] === 0x02 || decoded[1] === 0x03,
+    t.equal(decoded[1], 0x01, 'second byte should be 0x01 (varint)')
+    // Third byte should be 0x02 or 0x03 (compressed key prefix)
+    t.ok(decoded[2] === 0x02 || decoded[2] === 0x03,
         'compressed public key should start with 0x02 or 0x03')
 })
 
@@ -150,6 +158,12 @@ test('keys command generates k256 keypair in JWK format', async t => {
     t.ok(output.d, 'should have d (private key) component')
     t.ok(!output.publicKey, 'should not have separate publicKey field')
     t.ok(!output.privateKey, 'should not have separate privateKey field')
+})
+
+test('k256 with did format', async t => {
+    const result = await runCLI(['keys', 'k256', '-f', 'did'])
+    t.ok(result.stdout.trim().includes('did:key:zQ3sh'),
+        'did format is correct')
 })
 
 test('k256 raw has multikey public key & base64url private key', async t => {
@@ -530,13 +544,13 @@ test('encode k256 multikey to hex preserves multicodec prefix', async t => {
     t.equal(hexResult.code, 0, 'multi to hex conversion should succeed')
     const hexValue = hexResult.stdout.trim()
 
-    // Verify hex includes the multicodec prefix (0xe7)
-    t.ok(hexValue.startsWith('e7'),
-        'hex output should include secp256k1 multicodec prefix (e7)')
+    // Verify hex includes the multicodec prefix (0xe701)
+    t.ok(hexValue.startsWith('e701'),
+        'hex output should include secp256k1 multicodec prefix (e701)')
 
-    // Verify length is 68 chars (34 bytes * 2: 1 multicodec + 33 key)
-    t.equal(hexValue.length, 68,
-        'hex output should be 68 chars (34 bytes: 1 multicodec + 33 key)')
+    // Verify length is 70 chars (35 bytes * 2: 2 multicodec + 33 key)
+    t.equal(hexValue.length, 70,
+        'hex output should be 70 chars (35 bytes: 2 multicodec + 33 key)')
 })
 
 test('encode round-trip: k256 multi -> hex -> multi', async t => {
@@ -555,9 +569,9 @@ test('encode round-trip: k256 multi -> hex -> multi', async t => {
     t.equal(hexResult.code, 0, 'multi to hex conversion should succeed')
     const hexValue = hexResult.stdout.trim()
 
-    // Verify hex starts with e7 multicodec
-    t.ok(hexValue.startsWith('e7'),
-        'hex should include secp256k1 multicodec prefix')
+    // Verify hex starts with e701 multicodec
+    t.ok(hexValue.startsWith('e701'),
+        'hex should include secp256k1 multicodec prefix (e701)')
 
     // Convert hex -> multi
     const multiResult = await runCLIWithStdin([
@@ -777,6 +791,245 @@ test('sign command errors when both message and stdin are missing', async t => {
 })
 
 // ------------------------------
+// Test the `public` command
+// ------------------------------
+
+test('public command derives Ed25519 public key in JSON format', async t => {
+    // Generate a keypair first
+    const keyResult = await runCLI(['keys', 'ed25519'])
+    t.equal(keyResult.code, 0, 'keys command should exit with code 0')
+
+    const keyOutput = JSON.parse(keyResult.stdout.trim())
+    const privateKey = keyOutput.privateKey
+    const expectedPublicKey = keyOutput.publicKey
+
+    // Derive the public key
+    const result = await runCLI([
+        'public',
+        '--type',
+        'ed25519',
+        '--input',
+        'base64url',
+        '--format',
+        'json',
+        privateKey
+    ])
+
+    t.equal(result.code, 0, 'public command should exit with code 0')
+
+    const output = JSON.parse(result.stdout.trim())
+    t.ok(output.publicKey, 'should have publicKey property')
+    t.equal(output.keyType, 'ed25519', 'should have keyType ed25519')
+    t.ok(output.publicKey.startsWith('did:key:z6Mk'),
+        'Ed25519 public key should be in DID format')
+    t.equal(output.publicKey, 'did:key:' + expectedPublicKey,
+        'derived public key should match original')
+})
+
+test('public command derives Ed25519 public key in hex format', async t => {
+    // Generate a keypair
+    const keyResult = await runCLI(['keys', 'ed25519'])
+    t.equal(keyResult.code, 0, 'keys command should exit with code 0')
+
+    const keyOutput = JSON.parse(keyResult.stdout.trim())
+    const privateKey = keyOutput.privateKey
+
+    // Derive the public key in hex format
+    const result = await runCLI([
+        'public',
+        '--type',
+        'ed25519',
+        '--input',
+        'base64url',
+        '--format',
+        'hex',
+        privateKey
+    ])
+
+    t.equal(result.code, 0, 'public command should exit with code 0')
+
+    const output = result.stdout.trim()
+    t.ok(/^[0-9a-f]+$/.test(output), 'output should be hex encoded')
+    t.equal(output.length, 64,
+        'Ed25519 public key should be 32 bytes (64 hex chars)')
+})
+
+test('public command derives k256 (secp256k1) public key', async t => {
+    // Generate a k256 keypair
+    const keyResult = await runCLI(['keys', 'k256'])
+    t.equal(keyResult.code, 0, 'keys command should exit with code 0')
+
+    const keyOutput = JSON.parse(keyResult.stdout.trim()) as SerializedKeypair
+    const privateKey = keyOutput.privateKey
+    const expectedPublicKey = keyOutput.publicKey
+
+    // Derive the public key
+    const result = await runCLI([
+        'public',
+        '--type',
+        'k256',
+        '--input',
+        'base64url',
+        '--format',
+        'json',
+        privateKey
+    ])
+
+    t.equal(result.code, 0, 'public command should exit with code 0')
+
+    const output = JSON.parse(result.stdout.trim())
+    t.ok(output.publicKey, 'should have publicKey property')
+    t.equal(output.keyType, 'k256', 'should have keyType k256')
+    t.ok(output.publicKey.startsWith('did:key:z'),
+        'k256 public key should be in did format')
+    t.equal(output.publicKey.replace('did:key:', ''), expectedPublicKey,
+        'derived k256 public key should match original')
+})
+
+test('public command derives k256 public key in base64url format', async t => {
+    // Generate a k256 keypair
+    const keyResult = await runCLI(['keys', 'k256'])
+    t.equal(keyResult.code, 0, 'keys command should exit with code 0')
+
+    const keyOutput = JSON.parse(keyResult.stdout.trim())
+    const privateKey = keyOutput.privateKey
+
+    // Derive the public key in base64url format
+    const result = await runCLI([
+        'public',
+        '--type',
+        'k256',
+        '--input',
+        'base64url',
+        '--format',
+        'base64url',
+        privateKey
+    ])
+
+    t.equal(result.code, 0, 'public command should exit with code 0')
+
+    const output = result.stdout.trim()
+    t.ok(/^[A-Za-z0-9_-]+$/.test(output),
+        'output should be base64url encoded')
+    // secp256k1 compressed public key is 33 bytes
+    t.ok(output.length === 44, // 33 bytes base64url = 44 chars
+        'compressed secp256k1 public key should be 33 bytes')
+})
+
+test('public command derives X25519 public key', async t => {
+    // Generate an X25519 keypair
+    const keyResult = await runCLI(['keys', 'x25519'])
+    t.equal(keyResult.code, 0, 'keys command should exit with code 0')
+
+    const keyOutput = JSON.parse(keyResult.stdout.trim())
+    const privateKey = keyOutput.privateKey
+    const expectedPublicKey = keyOutput.publicKey
+
+    // Derive the public key
+    const result = await runCLI([
+        'public',
+        '--type',
+        'x25519',
+        '--input',
+        'base64url',
+        '--format',
+        'base64url',
+        privateKey
+    ])
+
+    t.equal(result.code, 0, 'public command should exit with code 0')
+
+    const output = result.stdout.trim()
+    t.ok(/^[A-Za-z0-9_-]+$/.test(output),
+        'output should be base64url encoded')
+    const expectedBytes = u.fromString(output, 'base64url')
+    const multikeyBytes = u.fromString(expectedPublicKey.slice(1), 'base58btc')
+    // Extract key from multikey (last 32 bytes)
+    const keyFromMulti = multikeyBytes.slice(multikeyBytes.length - expectedBytes.length)
+
+    t.equal(u.toString(keyFromMulti, 'base64url'), output,
+        'derived X25519 public key should match original')
+})
+
+test('public command requires --type option', async t => {
+    const result = await runCLI([
+        'public',
+        'PAjfFB2OvkWOGpO9iLqMujY8YucqHriHEtcdo4GhQDM'
+    ])
+
+    t.ok(result.code !== 0,
+        'should exit with non-zero code when --type is missing')
+    t.ok(result.stderr.includes('required') || result.stderr.includes('Missing'),
+        'should show error about missing --type')
+})
+
+test('public command with invalid key type shows error', async t => {
+    const result = await runCLI([
+        'public',
+        'PAjfFB2OvkWOGpO9iLqMujY8YucqHriHEtcdo4GhQDM',
+        '--type',
+        'invalid'
+    ])
+
+    t.ok(result.code !== 0,
+        'should exit with non-zero code for invalid key type')
+    t.ok(result.stderr.includes('Invalid') || result.stderr.includes('Choices'),
+        'should show error about invalid key type')
+})
+
+test('public command shows help with --help flag', async t => {
+    const result = await runCLI(['public', '--help'])
+
+    t.equal(result.code, 0, 'help command should exit with code 0')
+    t.ok(result.stdout.includes('public'),
+        'should show command name')
+    t.ok(result.stdout.includes('type') || result.stdout.includes('-t'),
+        'should mention type option')
+    t.ok(result.stdout.includes('format') || result.stdout.includes('-f'),
+        'should mention format option')
+})
+
+test('public command derives public key with hex input format', async t => {
+    // Generate a keypair
+    const keyResult = await runCLI(['keys', 'ed25519'])
+    t.equal(keyResult.code, 0, 'keys command should exit with code 0')
+
+    const keyOutput = JSON.parse(keyResult.stdout.trim())
+    t.ok(keyOutput.publicKey, 'should have a .publicKey property')
+    t.ok(!keyOutput.publicKey.includes('did:key'),
+        'public key should be in multikey format')
+    const privateKeyBase64url = keyOutput.privateKey
+
+    // Convert private key to hex
+    const privateKeyHex = u.toString(
+        u.fromString(privateKeyBase64url, 'base64url'),
+        'hex'
+    )
+
+    // Derive the public key using hex input
+    const result = await runCLI([
+        'public',
+        privateKeyHex,
+        '--type',
+        'ed25519',
+        '--input',
+        'hex',
+        '--format',
+        'json'
+    ])
+
+    t.equal(result.code, 0, 'public command should exit with code 0')
+
+    const output = JSON.parse(result.stdout.trim()) as {
+        publicKey: string;
+        privateKey: string;
+    }
+    t.ok(output.publicKey, 'should have publicKey property')
+    t.equal(output.publicKey.replace('did:key:', ''), keyOutput.publicKey,
+        'derived public key should match original')
+})
+
+// ------------------------------
 // JS API Tests
 // ------------------------------
 
@@ -807,8 +1060,10 @@ test('JS API: keys() generates k256 (secp256k1) keypair', async t => {
 
     t.ok(keypair.publicKey, 'should have publicKey property')
     t.ok(keypair.privateKey, 'should have privateKey property')
-    t.ok(typeof keypair.publicKey === 'string', 'publicKey should be a string')
-    t.ok(typeof keypair.privateKey === 'string', 'privateKey should be a string')
+    t.ok(typeof keypair.publicKey === 'string',
+        'publicKey should be a string')
+    t.ok(typeof keypair.privateKey === 'string',
+        'privateKey should be a string')
 
     // Verify public key is in multikey format
     if (typeof keypair.publicKey === 'string') {
@@ -816,16 +1071,17 @@ test('JS API: keys() generates k256 (secp256k1) keypair', async t => {
             'k256 public key should be in multikey format (z prefix)')
 
         // Decode multikey to verify it's 34 bytes
-        // (1 byte multicodec + 33 bytes compressed key)
+        // (2 bytes multicodec varint + 33 bytes compressed key)
         const multikey = keypair.publicKey.slice(1) // Remove 'z' prefix
         const decoded = u.fromString(multikey, 'base58btc')
-        t.equal(decoded.length, 34,
-            'decoded multikey should be 34 bytes ' +
-                '(1 multicodec + 33 compressed key)')
+        t.equal(decoded.length, 35,
+            'decoded multikey should be 35 bytes ' +
+            '(2 multicodec + 33 compressed key)')
         t.equal(decoded[0], 0xe7,
             'first byte should be 0xe7 (secp256k1 multicodec)')
-        // Second byte should be 0x02 or 0x03 (compressed key prefix)
-        t.ok(decoded[1] === 0x02 || decoded[1] === 0x03,
+        t.equal(decoded[1], 0x01, 'second byte should be 0x01 (varint)')
+        // Third byte should be 0x02 or 0x03 (compressed key prefix)
+        t.ok(decoded[2] === 0x02 || decoded[2] === 0x03,
             'compressed public key should start with 0x02 or 0x03')
     }
 })
@@ -945,13 +1201,109 @@ test('JS API: decode() decodes hex to UTF-8', async t => {
     t.equal(decoded, 'Hello World', 'should correctly decode hex to UTF-8')
 })
 
+test('JS API: derivePublicKey() derives Ed25519 public key', async t => {
+    // Generate a keypair
+    const keypair = await keys({ keyType: 'ed25519' })
+
+    if (typeof keypair.privateKey === 'string' &&
+        typeof keypair.publicKey === 'string') {
+        // Derive the public key
+        const buf = await derivePublicKey(keypair.privateKey, {
+            keyType: 'ed25519',
+            inputFormat: 'base64url',
+        })
+
+        t.ok(buf instanceof Uint8Array,
+            'should return a Uint8Array of the public key')
+
+        // t.ok(typeof result === 'object', 'should return an object')
+        // t.ok(result.publicKey, 'should have publicKey property')
+        // t.equal(result.keyType, 'ed25519', 'should have keyType ed25519')
+        // t.equal(result.publicKey, keypair.publicKey,
+        //     'derived public key should match original')
+    }
+})
+
+test('JS API: derivePublicKey() derives Ed25519 public key in hex format',
+    async t => {
+        // Generate a keypair
+        const keypair = await keys({ keyType: 'ed25519' })
+
+        if (typeof keypair.privateKey === 'string') {
+            // Derive the public key in hex format
+            const buf = await derivePublicKey(keypair.privateKey, {
+                keyType: 'ed25519',
+                inputFormat: 'base64url',
+            })
+
+            t.ok(buf instanceof Uint8Array,
+                'should return a Uint8Array for ed25519 private key')
+        }
+    })
+
+test('JS API: derivePublicKey() derives k256 (secp256k1) public key',
+    async t => {
+        // Generate a k256 keypair
+        const keypair = await keys({ keyType: 'k256' })
+
+        if (typeof keypair.privateKey === 'string' &&
+            typeof keypair.publicKey === 'string') {
+            // Derive the public key
+            const result = await derivePublicKey(keypair.privateKey, {
+                keyType: 'k256',
+                inputFormat: 'base64url',
+            })
+            t.ok(result instanceof Uint8Array, 'should return Uint8Array')
+        }
+    })
+
+test('JS API: derivePublicKey() derives X25519 public key', async t => {
+    // Generate an X25519 keypair
+    const keypair = await keys({ keyType: 'x25519' })
+
+    if (typeof keypair.privateKey === 'string' &&
+        typeof keypair.publicKey === 'string') {
+        // Derive the public key
+        const derivedPublicKey = await derivePublicKey(keypair.privateKey, {
+            keyType: 'x25519',
+            inputFormat: 'base64url',
+        })
+
+        t.ok(derivedPublicKey instanceof Uint8Array,
+            'should return a Uint8Array')
+    }
+})
+
+test('JS API: derivePublicKey() handles hex input format', async t => {
+    // Generate a keypair
+    const keypair = await keys({ keyType: 'ed25519' })
+
+    if (typeof keypair.privateKey === 'string' &&
+        typeof keypair.publicKey === 'string') {
+        // Convert private key to hex
+        const privateKeyHex = u.toString(
+            u.fromString(keypair.privateKey, 'base64url'),
+            'hex'
+        )
+
+        // Derive the public key using hex input
+        const result = await derivePublicKey(privateKeyHex, {
+            keyType: 'ed25519',
+            inputFormat: 'hex',
+        })
+
+        t.ok(result instanceof Uint8Array,
+            'Should return a Uint8Array')
+    }
+})
+
 /**
  * Helper function to run the CLI command and capture output
  */
 function runCLI (args:string[]):Promise<{
     stdout:string
     stderr:string
-    code:number | null
+    code:number|null
 }> {
     return new Promise((resolve) => {
         const child = spawn('node', [CLI_PATH, ...args])
@@ -978,7 +1330,7 @@ function runCLI (args:string[]):Promise<{
 function runCLIWithStdin (args:string[], input:string):Promise<{
     stdout:string
     stderr:string
-    code:number | null
+    code:number|null
 }> {
     return new Promise((resolve) => {
         const child = spawn('node', [CLI_PATH, ...args])
