@@ -1,5 +1,5 @@
 {
-  "name": "@substrate-system/crypt",
+  "name": "@mycelial-systems/crypt",
   "version": "0.1.12",
   "description": "CLI tool for creating and ecoding keys",
   "type": "module",
@@ -58,13 +58,13 @@
     "string",
     "encode"
   ],
-  "homepage": "https://github.com/substrate-system/crypt",
+  "homepage": "https://github.com/mycelial-system/crypt",
   "bugs": {
-    "url": "https://github.com/substrate-system/crypt/issues"
+    "url": "https://github.com/mycelial-system/crypt/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/substrate-system/crypt.git"
+    "url": "git+https://github.com/mycelial-system/crypt.git"
   },
   "license": "SEE LICENSE IN LICENSE",
   "author": "nichoth <nichoth@gmail.com> (https://nichoth.com)"
