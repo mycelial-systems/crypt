@@ -1,6 +1,6 @@
 {
   "name": "@mycelial-systems/crypt",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "CLI tool for creating and ecoding keys",
   "type": "module",
   "main": "dist/cli.js",
