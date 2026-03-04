@@ -58,13 +58,13 @@
     "string",
     "encode"
   ],
-  "homepage": "https://github.com/mycelial-system/crypt",
+  "homepage": "https://github.com/mycelial-systems/crypt",
   "bugs": {
-    "url": "https://github.com/mycelial-system/crypt/issues"
+    "url": "https://github.com/mycelial-systems/crypt/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mycelial-system/crypt.git"
+    "url": "git+https://github.com/mycelial-systems/crypt.git"
   },
   "license": "SEE LICENSE IN LICENSE",
   "author": "nichoth <nichoth@gmail.com> (https://nichoth.com)"
